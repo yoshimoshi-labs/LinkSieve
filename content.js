@@ -1,52 +1,45 @@
 /**
  * content.js — LinkedIn Job Filter (content script)
  *
- * Architecture
- * ────────────
- * - `settings`  Single object holding all current filter values read from
- *               chrome.storage.sync.  Passed to every filter so they each
- *               have one predictable argument.
+ * Supports two LinkedIn job search experiences:
+ *   AI Search  — cards matched by [componentkey^="job-card-component-ref"]
+ *   Classic    — cards matched by [data-job-id].job-card-container
  *
- * - `FILTERS`   Registry of pluggable filter objects.  Each entry has:
- *                 name  — human-readable label used for debugging
- *                 test(card, settings) → boolean
- *                         return true to hide the card
+ * Only the cards belonging to the active experience are filtered; the other
+ * experience's cards are always restored to visible.
  *
- * - filterAll() Iterates every job card and applies every registered filter.
- *               A card is hidden when ANY filter returns true.
+ * ── Adding a new AI Search filter ────────────────────────────────────────────
+ * 1. Add a storage key to `settings` and to the chrome.storage.sync.get() call.
+ * 2. Append one object to AI_FILTERS with a `name` and a `test` function.
  *
- * ── Adding a new filter ──────────────────────────────────────────────────────
- * 1. Add a storage key for its config value (if needed) to the `settings`
- *    object below and to the chrome.storage.sync.get() call in init().
- * 2. Append one object to FILTERS with a `name` and a `test` function.
- * That's it — no other code needs to change.
- * ────────────────────────────────────────────────────────────────────────────
+ * ── Adding a new Classic filter ─────────────────────────────────────────────
+ * Same steps, but append to CLASSIC_FILTERS instead.
  */
 
 (function () {
 
+  // Guard against double-injection (e.g. background re-inject on SPA nav + manifest inject).
+  if (window.__linkSieveActive) return;
+  window.__linkSieveActive = true;
+
   // ── Settings ───────────────────────────────────────────────────────────────
-  // Single source of truth for all configurable filter values.
-  // Updated by applyStorageData() on load and on every storage change.
 
   var settings = {
-    extensionEnabled: true,
-    blocklist:        [],    // lowercase company-name strings
-    hideApplied:      false,
+    extensionEnabled:     true,
+    blocklist:            [],
+    hideApplied:          false,
+    experienceMode:       'ai',   // 'ai' | 'classic'
+    classicHidePromoted:  false,
+    classicHideApplied:   false,
+    classicHideEasyApply: false,
   };
 
-  // ── Filter registry ────────────────────────────────────────────────────────
-  // To add a new filter, append an object here.  Nothing else needs to change.
+  // ── AI Search filter registry ──────────────────────────────────────────────
 
-  var FILTERS = [
+  var AI_FILTERS = [
 
     {
       name: 'blocklist',
-      /**
-       * Hides cards whose company name matches any entry in the blocklist.
-       * Comparison is case-insensitive and supports partial matches, so that
-       * e.g. "acme" will also block "Acme Corp" or "Acme International".
-       */
       test: function (card, s) {
         var company = getCompany(card);
         return company !== null &&
@@ -56,37 +49,54 @@
 
     {
       name: 'hideApplied',
-      /**
-       * Hides cards that LinkedIn marks as already applied.
-       * Detected via a footer <p> whose trimmed text is exactly "Applied".
-       * Exact-match avoids false positives like "Applied Materials".
-       */
       test: function (card, s) {
         return s.hideApplied && isApplied(card);
       },
     },
 
-    // ── Add new filters below this line ──────────────────────────────────────
-    //
-    // Example — hide remote-only jobs:
-    //
-    // {
-    //   name: 'hideRemote',
-    //   test: function (card, s) {
-    //     return s.hideRemote && isRemote(card);
-    //   },
-    // },
+  ];
+
+  // ── Classic Search filter registry ────────────────────────────────────────
+
+  var CLASSIC_FILTERS = [
+
+    {
+      name: 'classic-blocklist',
+      test: function (card, s) {
+        var company = getClassicCompany(card);
+        return company !== null &&
+               s.blocklist.some(function (b) { return company.includes(b); });
+      },
+    },
+
+    {
+      name: 'classic-hideApplied',
+      test: function (card, s) {
+        return s.classicHideApplied && isClassicApplied(card);
+      },
+    },
+
+    {
+      name: 'classic-hidePromoted',
+      test: function (card, s) {
+        return s.classicHidePromoted && isClassicPromoted(card);
+      },
+    },
+
+    {
+      name: 'classic-hideEasyApply',
+      test: function (card, s) {
+        return s.classicHideEasyApply && isClassicEasyApply(card);
+      },
+    },
 
   ];
 
-  // ── DOM helpers ────────────────────────────────────────────────────────────
+  // ── AI Search DOM helpers ──────────────────────────────────────────────────
 
   /**
-   * Returns the wrapper element to show/hide.
-   *
-   * Each job card (div[role="button"][componentkey="job-card-component-ref-…"])
-   * is nested 3 levels deep inside the outer list item we actually want to hide.
-   * Walking up avoids relying on fragile class names.
+   * Returns the wrapper element to show/hide for an AI Search card.
+   * The card is nested 3 levels deep inside the outer list item.
    */
   function getHideTarget(card) {
     var el = card.parentElement &&
@@ -96,14 +106,9 @@
   }
 
   /**
-   * Extracts the company name from a job card without relying on CSS classes.
-   *
-   * LinkedIn job cards follow a consistent structural pattern:
-   *   - Job title <p> always contains one or more <span> children.
-   *   - Company name <p> is the first <p> *after* the title <p> that has
-   *     no <span> children and contains non-empty text.
-   *
-   * Returns the name as a lowercased string, or null if not found.
+   * Extracts the company name from an AI Search job card.
+   * The company <p> is the first span-free, non-empty <p> after the title <p>
+   * (the title <p> is identified by having <span> children).
    */
   function getCompany(card) {
     var ps = card.querySelectorAll('p');
@@ -111,12 +116,9 @@
 
     for (var i = 0; i < ps.length; i++) {
       var p = ps[i];
-
       if (!foundTitle) {
-        // The title <p> is identified by having <span> children.
         if (p.querySelector('span')) foundTitle = true;
       } else {
-        // The first span-free, non-empty <p> after the title is the company.
         if (!p.querySelector('span') && p.textContent.trim()) {
           return p.textContent.trim().toLowerCase();
         }
@@ -126,10 +128,6 @@
     return null;
   }
 
-  /**
-   * Returns true when LinkedIn shows "Applied" on the card footer.
-   * Uses an exact text match to avoid false positives.
-   */
   function isApplied(card) {
     var ps = card.querySelectorAll('p');
     for (var i = 0; i < ps.length; i++) {
@@ -138,61 +136,99 @@
     return false;
   }
 
-  // ── Core filter loop ───────────────────────────────────────────────────────
+  // ── Classic Search DOM helpers ─────────────────────────────────────────────
 
   /**
-   * Evaluates all FILTERS for every job card currently in the DOM and
-   * shows/hides each card accordingly.  Safe to call multiple times —
-   * each call is a full idempotent recompute.
+   * Returns the element to show/hide for a Classic card.
+   * Walks up to the <li data-occludable-job-id> wrapper, then any <li>, then
+   * falls back to the card div itself.
    */
+  function getClassicHideTarget(card) {
+    var li = card.closest('li[data-occludable-job-id]') || card.closest('li');
+    return li || card;
+  }
+
+  function getClassicCompany(card) {
+    var el = card.querySelector('.artdeco-entity-lockup__subtitle span[dir="ltr"]');
+    return el ? el.textContent.trim().toLowerCase() : null;
+  }
+
+  function isClassicApplied(card) {
+    var el = card.querySelector('.job-card-container__footer-job-state');
+    return el ? el.textContent.trim() === 'Applied' : false;
+  }
+
+  function isClassicPromoted(card) {
+    var spans = card.querySelectorAll(
+      'ul.job-card-list__footer-wrapper li.job-card-container__footer-item span[dir="ltr"]'
+    );
+    for (var i = 0; i < spans.length; i++) {
+      if (spans[i].textContent.trim() === 'Promoted') return true;
+    }
+    return false;
+  }
+
+  function isClassicEasyApply(card) {
+    // SVG icon is a reliable signal; footer text is a fallback.
+    if (card.querySelector('[data-test-icon="linkedin-bug-color-small"]')) return true;
+    var items = card.querySelectorAll(
+      'ul.job-card-list__footer-wrapper li.job-card-container__footer-item'
+    );
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].textContent.trim() === 'Easy Apply') return true;
+    }
+    return false;
+  }
+
+  // ── Core filter loop ───────────────────────────────────────────────────────
+
   function filterAll() {
-    var cards = document.querySelectorAll('[componentkey^="job-card-component-ref"]');
+    var aiCards      = document.querySelectorAll('[componentkey^="job-card-component-ref"]');
+    var classicCards = document.querySelectorAll('[data-job-id].job-card-container');
 
-    cards.forEach(function (card) {
-      var target = getHideTarget(card);
+    if (!settings.extensionEnabled) {
+      aiCards.forEach(function (card) { getHideTarget(card).style.display = ''; });
+      classicCards.forEach(function (card) { getClassicHideTarget(card).style.display = ''; });
+      return;
+    }
 
-      if (!settings.extensionEnabled) {
-        // Extension is off — restore all cards to visible.
-        target.style.display = '';
-        return;
-      }
-
-      // Hide the card if ANY registered filter matches it.
-      var shouldHide = FILTERS.some(function (filter) {
-        return filter.test(card, settings);
+    if (settings.experienceMode === 'classic') {
+      // Restore AI cards; filter Classic cards.
+      aiCards.forEach(function (card) { getHideTarget(card).style.display = ''; });
+      classicCards.forEach(function (card) {
+        var target = getClassicHideTarget(card);
+        var shouldHide = CLASSIC_FILTERS.some(function (f) { return f.test(card, settings); });
+        target.style.display = shouldHide ? 'none' : '';
       });
-
-      target.style.display = shouldHide ? 'none' : '';
-    });
+    } else {
+      // Restore Classic cards; filter AI cards.
+      classicCards.forEach(function (card) { getClassicHideTarget(card).style.display = ''; });
+      aiCards.forEach(function (card) {
+        var target = getHideTarget(card);
+        var shouldHide = AI_FILTERS.some(function (f) { return f.test(card, settings); });
+        target.style.display = shouldHide ? 'none' : '';
+      });
+    }
   }
 
   // ── Storage sync ───────────────────────────────────────────────────────────
 
-  /**
-   * Merges raw storage key-value pairs into the `settings` object.
-   * Called both on initial load and whenever storage changes, so all
-   * storage → settings mapping lives in exactly one place.
-   */
   function applyStorageData(data) {
     if (data.blocklist !== undefined) {
-      // Normalise to lowercase once here so filters don't have to.
       settings.blocklist = data.blocklist.map(function (c) { return c.toLowerCase(); });
     }
-    if (data.hideApplied !== undefined) {
-      settings.hideApplied = !!data.hideApplied;
-    }
-    if (data.extensionEnabled !== undefined) {
-      settings.extensionEnabled = !!data.extensionEnabled;
-    }
+    if (data.hideApplied !== undefined)          settings.hideApplied          = !!data.hideApplied;
+    if (data.extensionEnabled !== undefined)     settings.extensionEnabled     = !!data.extensionEnabled;
+    if (data.experienceMode !== undefined)       settings.experienceMode       = data.experienceMode;
+    if (data.classicHidePromoted !== undefined)  settings.classicHidePromoted  = !!data.classicHidePromoted;
+    if (data.classicHideApplied !== undefined)   settings.classicHideApplied   = !!data.classicHideApplied;
+    if (data.classicHideEasyApply !== undefined) settings.classicHideEasyApply = !!data.classicHideEasyApply;
   }
 
-  /**
-   * Loads settings from storage, runs the first filter pass, then starts
-   * watching for DOM mutations (LinkedIn is a SPA — cards load dynamically).
-   */
   function init() {
     chrome.storage.sync.get(
-      ['blocklist', 'hideApplied', 'extensionEnabled'],
+      ['blocklist', 'hideApplied', 'extensionEnabled', 'experienceMode',
+       'classicHidePromoted', 'classicHideApplied', 'classicHideEasyApply'],
       function (data) {
         applyStorageData(data);
         filterAll();
@@ -201,27 +237,18 @@
     );
   }
 
-  // Re-apply settings and re-filter whenever the popup changes something.
   chrome.storage.onChanged.addListener(function (changes, area) {
     if (area !== 'sync') return;
-
-    // StorageChange objects have { oldValue, newValue } — unwrap to a plain map
-    // so applyStorageData() can handle them identically to the initial load.
     var patch = {};
     Object.keys(changes).forEach(function (key) {
       patch[key] = changes[key].newValue;
     });
-
     applyStorageData(patch);
     filterAll();
   });
 
   // ── Mutation observer ──────────────────────────────────────────────────────
 
-  /**
-   * Re-runs filterAll() whenever LinkedIn injects new job cards into the DOM.
-   * This handles infinite scroll, tab switches, and SPA navigation.
-   */
   function observe() {
     new MutationObserver(function () {
       filterAll();

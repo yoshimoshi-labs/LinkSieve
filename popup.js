@@ -13,48 +13,61 @@
  */
 
 // ── DOM references ─────────────────────────────────────────────────────────
-// Group every element the popup touches so the rest of the code never calls
-// document.getElementById() directly.
 
 var DOM = {
-  enabledToggle:     document.getElementById('enabled-toggle'),
-  hideAppliedToggle: document.getElementById('hide-applied-toggle'),
-  statusCard:        document.getElementById('status-card'),
-  statusSubtitle:    document.getElementById('status-subtitle'),
-  filtersSection:    document.getElementById('filters-section'),
-  companiesSection:  document.getElementById('companies-section'),
-  countBadge:        document.getElementById('count-badge'),
-  input:             document.getElementById('company-input'),
-  blockBtn:          document.getElementById('block-btn'),
-  clearBtn:          document.getElementById('clear-btn'),
-  alreadyBadge:      document.getElementById('already-blocked-badge'),
-  chipCloud:         document.getElementById('chip-cloud'),
-  undoFooter:        document.getElementById('undo-footer'),
-  undoText:          document.getElementById('undo-text'),
-  undoBtn:           document.getElementById('undo-btn'),
-  undoClose:         document.getElementById('undo-close'),
+  enabledToggle:              document.getElementById('enabled-toggle'),
+  hideAppliedToggle:          document.getElementById('hide-applied-toggle'),
+  statusCard:                 document.getElementById('status-card'),
+  statusSubtitle:             document.getElementById('status-subtitle'),
+  aiFiltersSection:           document.getElementById('ai-filters-section'),
+  classicFiltersSection:      document.getElementById('classic-filters-section'),
+  companiesSection:           document.getElementById('companies-section'),
+  expAiBtn:                   document.getElementById('exp-ai'),
+  expClassicBtn:              document.getElementById('exp-classic'),
+  classicHidePromotedToggle:  document.getElementById('classic-hide-promoted-toggle'),
+  classicHideAppliedToggle:   document.getElementById('classic-hide-applied-toggle'),
+  classicHideEasyApplyToggle: document.getElementById('classic-hide-easy-apply-toggle'),
+  countBadge:                 document.getElementById('count-badge'),
+  input:                      document.getElementById('company-input'),
+  blockBtn:                   document.getElementById('block-btn'),
+  clearBtn:                   document.getElementById('clear-btn'),
+  alreadyBadge:               document.getElementById('already-blocked-badge'),
+  chipCloud:                  document.getElementById('chip-cloud'),
+  undoFooter:                 document.getElementById('undo-footer'),
+  undoText:                   document.getElementById('undo-text'),
+  undoBtn:                    document.getElementById('undo-btn'),
+  undoClose:                  document.getElementById('undo-close'),
 };
 
 // ── State ──────────────────────────────────────────────────────────────────
-// Single source of truth for all runtime data.  Render functions read this;
-// action functions write to it then call the relevant render function(s).
 
 var state = {
   blocklist:       [],    // array of company name strings (original casing)
   draft:           '',    // current value of the search/add input field
   recentlyRemoved: null,  // company name eligible for undo, or null
+  experienceMode:  'ai',  // 'ai' or 'classic'
 };
 
 // ── Storage ────────────────────────────────────────────────────────────────
 
 /** Reads persisted settings and initialises the UI on popup open. */
 function load() {
-  chrome.storage.sync.get(['blocklist', 'hideApplied', 'extensionEnabled'], function (data) {
-    state.blocklist = data.blocklist || [];
-    DOM.hideAppliedToggle.checked = !!data.hideApplied;
-    DOM.enabledToggle.checked = data.extensionEnabled !== false;
-    renderAll();
-  });
+  chrome.storage.sync.get(
+    ['blocklist', 'hideApplied', 'extensionEnabled', 'experienceMode',
+     'classicHidePromoted', 'classicHideApplied', 'classicHideEasyApply'],
+    function (data) {
+      state.blocklist      = data.blocklist || [];
+      state.experienceMode = data.experienceMode || 'ai';
+
+      DOM.hideAppliedToggle.checked          = !!data.hideApplied;
+      DOM.enabledToggle.checked              = data.extensionEnabled !== false;
+      DOM.classicHidePromotedToggle.checked  = !!data.classicHidePromoted;
+      DOM.classicHideAppliedToggle.checked   = !!data.classicHideApplied;
+      DOM.classicHideEasyApplyToggle.checked = !!data.classicHideEasyApply;
+
+      renderAll();
+    }
+  );
 }
 
 /** Persists the current blocklist and refreshes the status card. */
@@ -121,6 +134,7 @@ function escapeHtml(str) {
 /** Convenience: runs all render functions.  Called after the initial load. */
 function renderAll() {
   renderStatus();
+  renderExperience();
   renderChips();
   renderInputUI();
 }
@@ -141,8 +155,18 @@ function renderStatus() {
     ? 'Blocking ' + n + ' compan' + (n === 1 ? 'y' : 'ies')
     : 'Filtering paused — all jobs visible';
 
-  DOM.filtersSection.classList.toggle('dimmed', !enabled);
+  DOM.aiFiltersSection.classList.toggle('dimmed', !enabled);
+  DOM.classicFiltersSection.classList.toggle('dimmed', !enabled);
   DOM.companiesSection.classList.toggle('dimmed', !enabled);
+}
+
+/** Shows the correct filter panel and highlights the active experience button. */
+function renderExperience() {
+  var isClassic = state.experienceMode === 'classic';
+  DOM.expAiBtn.classList.toggle('active', !isClassic);
+  DOM.expClassicBtn.classList.toggle('active', isClassic);
+  DOM.aiFiltersSection.classList.toggle('hidden', isClassic);
+  DOM.classicFiltersSection.classList.toggle('hidden', !isClassic);
 }
 
 /**
@@ -203,19 +227,10 @@ function renderInputUI() {
 
 // ── DOM node builders ──────────────────────────────────────────────────────
 
-/**
- * Creates a chip element for one blocked company.
- * If `query` is non-empty, the matching substring is wrapped in <mark>.
- *
- * @param {string} company — original-casing company name
- * @param {string} query   — current search/add input value (may be empty)
- * @returns {HTMLElement}
- */
 function makeChip(company, query) {
   var chip = document.createElement('span');
   chip.className = 'chip';
 
-  // ── Name label (with optional match highlight) ──
   var nameSpan = document.createElement('span');
   nameSpan.className = 'chip-name';
 
@@ -234,7 +249,6 @@ function makeChip(company, query) {
     nameSpan.textContent = company;
   }
 
-  // ── Remove (×) button ──
   var removeBtn = document.createElement('button');
   removeBtn.className = 'chip-remove';
   removeBtn.title     = 'Unblock';
@@ -246,10 +260,6 @@ function makeChip(company, query) {
   return chip;
 }
 
-/**
- * Creates the placeholder shown when the blocklist is completely empty.
- * @returns {HTMLElement}
- */
 function makeEmptyState(message) {
   var el = document.createElement('div');
   el.className   = 'empty-state';
@@ -257,14 +267,6 @@ function makeEmptyState(message) {
   return el;
 }
 
-/**
- * Creates the placeholder shown when a search query matches nothing.
- * When the query is new (not a duplicate), hints that Enter will add it.
- *
- * @param {string}  query — the current search query
- * @param {boolean} isDup — true if the query already exists in the blocklist
- * @returns {HTMLElement}
- */
 function makeNoMatchState(query, isDup) {
   var el = document.createElement('div');
   el.className = 'no-match-state';
@@ -288,7 +290,6 @@ function hideUndo() {
 }
 
 // ── Event binding ──────────────────────────────────────────────────────────
-// All addEventListener calls live here so event wiring is easy to audit.
 
 function init() {
 
@@ -298,9 +299,35 @@ function init() {
     renderStatus();
   });
 
-  // Toggle: hide jobs already applied to
+  // Toggle: hide jobs already applied to (AI Search mode)
   DOM.hideAppliedToggle.addEventListener('change', function () {
     chrome.storage.sync.set({ hideApplied: DOM.hideAppliedToggle.checked });
+  });
+
+  // Experience selector buttons
+  DOM.expAiBtn.addEventListener('click', function () {
+    state.experienceMode = 'ai';
+    chrome.storage.sync.set({ experienceMode: 'ai' });
+    renderExperience();
+  });
+
+  DOM.expClassicBtn.addEventListener('click', function () {
+    state.experienceMode = 'classic';
+    chrome.storage.sync.set({ experienceMode: 'classic' });
+    renderExperience();
+  });
+
+  // Classic filter toggles
+  DOM.classicHidePromotedToggle.addEventListener('change', function () {
+    chrome.storage.sync.set({ classicHidePromoted: DOM.classicHidePromotedToggle.checked });
+  });
+
+  DOM.classicHideAppliedToggle.addEventListener('change', function () {
+    chrome.storage.sync.set({ classicHideApplied: DOM.classicHideAppliedToggle.checked });
+  });
+
+  DOM.classicHideEasyApplyToggle.addEventListener('change', function () {
+    chrome.storage.sync.set({ classicHideEasyApply: DOM.classicHideEasyApplyToggle.checked });
   });
 
   // Search / add input

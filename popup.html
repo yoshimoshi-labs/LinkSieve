@@ -27,12 +27,43 @@
     </label>
   </div>
 
-  <!-- Filter toggles -->
-  <div id="filters-section">
+  <!-- Experience selector -->
+  <div id="experience-selector">
+    <button id="exp-ai" class="exp-btn" type="button">AI Search</button>
+    <button id="exp-classic" class="exp-btn" type="button">Classic</button>
+  </div>
+
+  <!-- AI Search filter toggles -->
+  <div id="ai-filters-section">
     <div class="filter-row">
       <span>Hide jobs I've applied to</span>
       <label class="switch switch-sm">
         <input type="checkbox" id="hide-applied-toggle" />
+        <span class="slider"></span>
+      </label>
+    </div>
+  </div>
+
+  <!-- Classic filter toggles -->
+  <div id="classic-filters-section" class="hidden">
+    <div class="filter-row">
+      <span>Hide promoted jobs</span>
+      <label class="switch switch-sm">
+        <input type="checkbox" id="classic-hide-promoted-toggle" />
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="filter-row">
+      <span>Hide jobs I've applied to</span>
+      <label class="switch switch-sm">
+        <input type="checkbox" id="classic-hide-applied-toggle" />
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="filter-row">
+      <span>Hide Easy Apply jobs</span>
+      <label class="switch switch-sm">
+        <input type="checkbox" id="classic-hide-easy-apply-toggle" />
         <span class="slider"></span>
       </label>
     </div>

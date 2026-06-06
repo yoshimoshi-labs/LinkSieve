@@ -3,7 +3,7 @@
   "name": "LinkedIn Job Filter",
   "version": "1.0.0",
   "description": "Hide job postings from companies you want to block on LinkedIn Jobs.",
-  "permissions": ["storage"],
+  "permissions": ["storage", "scripting", "tabs"],
   "background": {
     "service_worker": "background.js"
   },

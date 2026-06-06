@@ -110,13 +110,44 @@ body {
 .switch input:checked + .slider:before       { left: calc(100% - 18px); }
 .switch.switch-sm input:checked + .slider:before { left: calc(100% - 16px); }
 
+/* ── Experience selector ── */
+#experience-selector {
+  display: flex;
+  gap: 6px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line-2);
+}
+
+.exp-btn {
+  flex: 1;
+  padding: 6px 0;
+  border: 1.5px solid var(--line);
+  background: transparent;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-2);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.exp-btn.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
 /* ── Filter rows ── */
-#filters-section {
+#ai-filters-section,
+#classic-filters-section {
   border-bottom: 1px solid var(--line-2);
   transition: opacity 0.2s;
 }
 
-#filters-section.dimmed,
+#ai-filters-section.dimmed,
+#classic-filters-section.dimmed,
 #companies-section.dimmed {
   opacity: 0.55;
   pointer-events: none;
@@ -352,4 +383,3 @@ body {
 }
 
 #undo-close:hover { color: var(--ink); }
-
